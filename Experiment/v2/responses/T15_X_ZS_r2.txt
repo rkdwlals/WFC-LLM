@@ -1,0 +1,22 @@
+{
+  "tag_multipliers": {
+    "rock": 0.0,
+    "wall": 0.2,
+    "crate": 0.7,
+    "bush": 0.05
+  },
+  "region_density": {
+    "NW": "low",
+    "N": "low",
+    "NE": "high",
+    "W": "low",
+    "C": "high",
+    "E": "low",
+    "SW": "high",
+    "S": "low",
+    "SE": "low"
+  },
+  "hard_constraints": {
+    "path_required": true
+  }
+}

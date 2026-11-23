@@ -1,0 +1,1 @@
+{"id": "T11_D_ZS_r1", "model": "gemma4:e4b", "model_id": "dc35e8d9c606", "provider": "OpenAICompatible", "temperature": 0.7, "reasoning_effort": "none", "retries": 0, "seconds": 3.4, "finish_reason": "stop", "time": "2026-11-19T21:45:10+09:00"}

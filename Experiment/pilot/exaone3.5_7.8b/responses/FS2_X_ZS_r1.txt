@@ -1,0 +1,12 @@
+```json
+{
+  "tag_multipliers": { "rock": 1.0, "wall": 4.5, "crate": 5.0, "bush": 0.0 },
+  "region_density": { "NW": "high", "N": "low", "NE": "low", "W": "high", "C": "high", "E": "high", "SW": "high", "S": "high", "SE": "very high" },
+  "hard_constraints": { "path_required": true }
+}
+```
+
+설명:
+- **tag_multipliers**: 바위(rock)의 비율을 기본으로 설정하고, 벽(wall)은 약 45%, 상자(crate)는 약 50%, 수풀(bush)은 존재하지 않으므로 0%로 설정했습니다.
+- **region_density**: 각 구역의 장애물 밀도를 요청하신 대로 설정했습니다. 명시되지 않은 구역은 가장 가까운 수준으로 처리했습니다 (예: 북 구역은 "low"로 처리).
+- **hard_constraints**: 시작점에서 목표 지점까지의 경로가 반드시 존재하도록 `path_required`를 `true`로 설정했습니다.

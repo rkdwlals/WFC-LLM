@@ -1,0 +1,23 @@
+```json
+{
+  "tag_multipliers": { "rock": 1.0, "wall": 4.5, "crate": 1.0, "bush": 0.0 },
+  "region_density": { 
+    "NW": "high", 
+    "N": "low", 
+    "NE": "low", 
+    "W": "high", 
+    "C": "high", 
+    "E": "high", 
+    "SW": "high", 
+    "S": "high", 
+    "SE": "high" 
+  },
+  "hard_constraints": { "path_required": true }
+}
+```
+
+**설명:**
+
+* **tag_multipliers:** 바위와 벽의 비율을 높여 요청된 밀도를 반영했습니다. 상자는 기본 비율로 설정했고, 수풀은 0%로 설정했습니다.
+* **region_density:** 각 구역에 해당하는 밀도를 요청대로 설정했습니다. 명시되지 않은 구역은 기본값인 "mid" 대신 해당 밀도에 맞는 값으로 설정했습니다.
+* **hard_constraints:** 시작점에서 목표 지점까지의 경로가 항상 존재하도록 `path_required`를 `true`로 설정했습니다.

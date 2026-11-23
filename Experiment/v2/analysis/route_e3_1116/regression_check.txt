@@ -1,0 +1,6 @@
+회귀 확인 (2026-11-16): 수정한 ObstacleWfc.cs(md5 95213e2de6e86889359339d6e4a068e5)로 기존 실험을 다시 실행
+results.csv     e63ca3381983b8e0c1fd86183713e325  기준 e63ca3381983b8e0c1fd86183713e325
+consistency.csv 53ad51e95d23b746ae6ab06388836484  기준 53ad51e95d23b746ae6ab06388836484
+diversity.csv   059ba71997d90b70e1d32ad306edff31  기준 059ba71997d90b70e1d32ad306edff31
+pathabl_1116.csv ba5a8f1a706a5b0582f3e8bfc9f17d90  기준 ba5a8f1a706a5b0582f3e8bfc9f17d90
+route_e3.csv의 ZS_PT 2,400행 = pathabl_1116.csv의 ZS_PT 2,400행 (전 열 문자열 일치)

@@ -1,0 +1,31 @@
+const { chromium } = require('playwright'); const path = require('path');
+const fs = require('fs'); const P = f => 'data:image/png;base64,' + fs.readFileSync(path.join(__dirname, 'panels', f)).toString('base64');
+const legend = (route) => `<div class=lg><span><i style="background:#808085;border-radius:50%"></i>바위</span><span><i style="background:#66422a"></i>벽</span><span><i style="background:#e6912e"></i>상자</span><span><i style="background:#38943d;border-radius:50%"></i>수풀</span><span><i style="background:#ffd91a;height:5px"></i>최단 경로</span>${route ? '<span><i style="background:#945cd1"></i>지정 동선</span>' : ''}<span><i style="background:#4d8cd9"></i>물</span><span><i style="background:#9e8561"></i>다리</span><span><i style="background:#fff;border:1px solid #999"></i>시작</span><span><i style="background:#e62626"></i>목표</span></div>`;
+const fig = (panels, route) => `<html><head><meta charset=utf-8><style>
+body{margin:0;background:#fff;font-family:'Noto Sans CJK KR','Noto Sans CJK SC',sans-serif;color:#111;width:1600px}
+.g{display:grid;grid-template-columns:1fr 1fr;gap:18px 24px;padding:20px 24px 6px}
+.p img{width:100%;display:block;border:1px solid #ddd}
+.t{font-size:22px;font-weight:700;margin:8px 0 2px}.s{font-size:18px;color:#333}
+.lg{display:flex;flex-wrap:wrap;gap:22px;justify-content:center;font-size:18px;padding:8px 24px 18px}
+.lg span{display:flex;align-items:center;gap:7px}.lg i{display:inline-block;width:18px;height:18px}
+</style></head><body><div class=g>${panels.map(p => `<div class=p><img src="${P(p[0])}"><div class=t>${p[1]}</div><div class=s>${p[2]}</div></div>`).join('')}</div>${legend(route)}</body></html>`;
+(async () => {
+  const b = await chromium.launch(); const pg = await b.newPage({ viewport: { width: 1600, height: 800 }, deviceScaleFactor: 2 });
+  const figs = {
+    fig2_T01_H2_compare: [[
+      ['f2_a_target.png', '(a) 목표 맵 T01', '정답 파라미터로 생성 · 북쪽 고밀도, 남쪽 저밀도, 바위 배수 4'],
+      ['f2_b_B0.png', '(b) B0 기본값 (LLM 없음)', 'region_mae 0.1508'],
+      ['f2_c_B2.png', '(c) B2 규칙 기반 · H2 기획서체 명령', 'region_mae 0.1694'],
+      ['f2_d_ZS.png', '(d) 제안 기법 ZS · H2 기획서체 명령', 'region_mae 0.1058']], false],
+    fig3_T01_H2_routes: [[
+      ['f3_a_random.png', '(a) 무작위 경로 선확보', '최단 경로 57칸 · region_mae 0.1058'],
+      ['f3_b_R1.png', '(b) 지정 동선 R1 직선형', '동선 57칸 / 최단 경로 57칸 · region_mae 0.1105'],
+      ['f3_c_R2.png', '(c) 지정 동선 R2 서쪽·북쪽 우회', '동선 91칸 / 최단 경로 91칸 (길이가 같은 다른 경로가 있어 노란 선이 일부 벗어남) · region_mae 0.1174'],
+      ['f3_d_R3.png', '(d) 지정 동선 R3 동쪽 우회', '동선 89칸 / 최단 경로 87칸 (목표 근처 지름길) · region_mae 0.1208']], true]};
+  for (const [name, [panels, route]] of Object.entries(figs)) {
+    await pg.setContent(fig(panels, route)); await pg.waitForFunction(() => [...document.images].every(i => i.complete && i.naturalWidth > 0));
+    const h = await pg.evaluate(() => document.body.scrollHeight); await pg.setViewportSize({ width: 1600, height: h });
+    await pg.screenshot({ path: name + '.png', fullPage: true }); console.log(name, h);
+  }
+  await b.close();
+})();

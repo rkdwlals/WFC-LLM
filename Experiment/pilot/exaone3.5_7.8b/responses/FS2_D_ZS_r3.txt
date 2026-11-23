@@ -1,0 +1,17 @@
+```json
+{
+  "tag_multipliers": { "rock": 0.1, "wall": 3.0, "crate": 2.0, "bush": 0.1 },
+  "region_density": { 
+    "NW": "low", 
+    "N": "low", 
+    "NE": "low", 
+    "W": "mid", 
+    "C": "low", 
+    "E": "mid", 
+    "SW": "low", 
+    "S": "low", 
+    "SE": "mid" 
+  },
+  "hard_constraints": { "path_required": true }
+}
+```

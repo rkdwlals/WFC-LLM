@@ -1,0 +1,55 @@
+// render.js — 맵 글자 파일 → 3D PNG. Unity 데모(DemoApp.cs)의 모양·크기·색 규칙을 그대로 옮김
+// 사용: node render.js <grid.txt> <out.png> [route.txt]
+const { chromium } = require('playwright'); const fs = require('fs'); const path = require('path');
+const [grid, out, route] = process.argv.slice(2);
+const rows = fs.readFileSync(grid, 'utf8').split('\n').filter(l => l.length > 0);
+const rrows = route ? fs.readFileSync(route, 'utf8').split('\n').filter(l => l.length > 0) : null;
+(async () => {
+  const b = await chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const p = await b.newPage({ viewport: { width: 1400, height: 1150 } });
+  await p.setContent('<html><body style="margin:0;background:#fff"><canvas id="c" width="1400" height="1150"></canvas></body></html>');
+  await p.addScriptTag({ path: path.join(__dirname, 'node_modules/three/build/three.min.js') });
+  await p.evaluate(({ rows, rrows }) => {
+    const H = rows.length, W = rows[0].length;
+    const R = new THREE.WebGLRenderer({ canvas: document.getElementById('c'), antialias: true, preserveDrawingBuffer: true });
+    R.setClearColor(0xffffff, 1); R.shadowMap.enabled = true; R.shadowMap.type = THREE.PCFSoftShadowMap;
+    const S = new THREE.Scene();
+    S.add(new THREE.HemisphereLight(0xffffff, 0x8a8a8a, 1.1));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    // Unity Sun: Euler(55,-30,0) → 빛이 남쪽 위에서 북동쪽 아래로 (Unity +z = 북)
+    sun.position.set((W - 1) / 2 - 22, 40, (H - 1) / 2 + 26); sun.target.position.set((W - 1) / 2, 0, (H - 1) / 2); S.add(sun.target); sun.castShadow = true; sun.shadow.mapSize.set(4096, 4096); const sc = sun.shadow.camera; sc.left = -30; sc.right = 30; sc.top = 30; sc.bottom = -30; sc.near = 1; sc.far = 150; sun.shadow.bias = -0.0005; S.add(sun);
+    const mats = {}; const M = (k, c) => mats[k] || (mats[k] = new THREE.MeshLambertMaterial({ color: new THREE.Color().setRGB(c[0], c[1], c[2], THREE.SRGBColorSpace) }));
+    const box = new THREE.BoxGeometry(1, 1, 1), sph = new THREE.SphereGeometry(0.5, 20, 14), cyl = new THREE.CylinderGeometry(0.5, 0.5, 2, 20);
+    const add = (g, m, x, y, z, sx, sy, sz, yaw) => { const o = new THREE.Mesh(g, m); o.position.set(x, y, z); o.scale.set(sx, sy, sz); o.castShadow = sy > 0.1; o.receiveShadow = true; o.rotation.y = (yaw || 0) * Math.PI / 180; S.add(o); return o; };
+    // world: x = 열, z = 행(위 = 북쪽 = 화면 위)
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const ch = rows[y][x];
+      if (ch === '~') add(box, M('water', [0.30, 0.55, 0.85]), x, -0.35, y, 1.002, 0.1, 1.002);
+      else add(box, ch === '=' ? M('road', [0.62, 0.52, 0.38]) : M('ground', [0.80, 0.76, 0.62]), x, -0.1, y, 1.002, 0.2, 1.002);
+      if (ch === 'S') add(cyl, M('start', [1, 1, 1]), x, 1, y, 0.6, 1, 0.6);
+      if (ch === 'G') add(cyl, M('goal', [0.9, 0.15, 0.15]), x, 1, y, 0.6, 1, 0.6);
+      const hash = (x * 73856093) ^ (y * 19349663), yaw = (hash & 3) * 90;
+      if (ch === 'R') add(sph, M('rock', [0.50, 0.50, 0.52]), x, 0.3, y, 0.9, 0.7, 0.9);
+      if (ch === 'W') add(box, M('wall', [0.40, 0.26, 0.16]), x, 0.8, y, 1, 1.6, 1);
+      if (ch === 'C') add(box, M('crate', [0.90, 0.57, 0.18]), x, 0.35, y, 0.7, 0.7, 0.7, yaw / 6);
+      if (ch === 'B') add(sph, M('bush', [0.22, 0.58, 0.24]), x, 0.35, y, 0.95, 0.8, 0.95);
+    }
+    if (rrows) for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const c = rrows[y][x]; if (c === '#' || c === 'S' || c === 'G') add(box, M('route', [0.58, 0.36, 0.82]), x, 0.005, y, 0.92, 0.02, 0.92); }
+    // 최단 경로: PathMetrics.ShortestPath와 같은 BFS(이웃 순서 +x, -x, +y, -y)
+    let s, t; for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { if (rows[y][x] === 'S') s = x * H + y; if (rows[y][x] === 'G') t = x * H + y; }
+    const prev = new Array(W * H).fill(-2), q = [s]; prev[s] = -1; const DX = [1, -1, 0, 0], DY = [0, 0, 1, -1];
+    while (q.length) { const u = q.shift(); if (u === t) break; const ux = Math.floor(u / H), uy = u % H;
+      for (let d = 0; d < 4; d++) { const nx = ux + DX[d], ny = uy + DY[d]; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const v = nx * H + ny; if (prev[v] !== -2) continue; const c = rows[ny][nx]; if (c === '~' || 'RWCB'.includes(c)) continue; prev[v] = u; q.push(v); } }
+    let plen = 0;
+    if (prev[t] !== -2) { const pts = []; for (let v = t; v !== -1; v = prev[v]) pts.push([Math.floor(v / H), v % H]); pts.reverse(); plen = pts.length;
+      for (let i = 1; i < pts.length; i++) { const a = new THREE.Vector3(pts[i - 1][0], 0.03, pts[i - 1][1]), c = new THREE.Vector3(pts[i][0], 0.03, pts[i][1]);
+        const o = add(box, M('path', [1, 0.85, 0.1]), (a.x + c.x) / 2, 0.03, (a.z + c.z) / 2, 1, 1, 1); const dx = c.x - a.x, dz = c.z - a.z;
+        o.scale.set(Math.abs(dx) > 0 ? 1.26 : 0.26, 0.05, Math.abs(dz) > 0 ? 1.26 : 0.26); } }
+    // 원근 카메라: 남쪽 위에서 약 40° 내려다봄 (시안)
+    const cx = (W - 1) / 2, cz = (H - 1) / 2; const cam = new THREE.PerspectiveCamera(30, 1400 / 1150, 1, 500);
+    const ang = 40 * Math.PI / 180, dist = 74; cam.position.set(cx, Math.sin(ang) * dist, cz + Math.cos(ang) * dist); cam.lookAt(cx, 0, cz + 1.5);
+    R.render(S, cam); document.title = 'plen ' + plen;
+  }, { rows, rrows });
+  console.log(path.basename(out), await p.title());
+  await (await p.$('#c')).screenshot({ path: out }); await b.close();
+})();

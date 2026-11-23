@@ -1,0 +1,12 @@
+using System; using System.IO; using System.Linq; using System.Text; using System.Collections.Generic; using ObstacleWFC;
+class Dump {
+  static BaseMap M;
+  static List<int[]> ReadRoute(string f){ var L=File.ReadAllLines(f).Where(l=>l.Length>0).ToArray(); var c=new List<int[]>(); for(int y=0;y<L.Length;y++) for(int x=0;x<L[y].Length;x++) if(L[y][x]=='#'||((L[y][x]=='S'||L[y][x]=='G'))) c.Add(new[]{x,y}); return c; }
+  static string Grid(int[,] g){ var sb=new StringBuilder(); for(int y=0;y<M.Height;y++){ for(int x=0;x<M.Width;x++){ var b=M.Tiles[x,y]; sb.Append(b==BaseTile.Water?'~':b==BaseTile.Road?'=':b==BaseTile.Spawn?'S':b==BaseTile.Goal?'G':DirectGrid.Symbols[g[x,y]]);} sb.Append('\n'); } return sb.ToString(); }
+  static void Main(string[] a){
+    M=BaseMap.Parse(File.ReadAllText(a[0])); var gen=new ObstacleGenerator(M);
+    var rep=ParamSchema.Parse(File.ReadAllText(a[1])); var p=rep.Params; Console.WriteLine("llm path_required="+p.PathRequired);
+    var pt=Conditions.Clone(p); pt.PathRequired=true; File.WriteAllText(a[2]+"_PT.txt",Grid(gen.Generate(pt,100).Obstacles));
+    for(int r=1;r<=3;r++){ var pr=Conditions.Clone(p); pr.PathRequired=true; pr.FixedCorridor=ReadRoute(a[3]+"/route_R"+r+".txt"); Console.WriteLine("R"+r+" cells "+pr.FixedCorridor.Count+" valid="+(ObstacleGenerator.ValidateCorridor(M,pr.FixedCorridor)??"ok")); File.WriteAllText(a[2]+"_R"+r+".txt",Grid(gen.Generate(pr,100).Obstacles)); }
+  }
+}

@@ -1,0 +1,20 @@
+using System; using System.IO; using System.Linq; using System.Collections.Generic; using ObstacleWFC;
+class Abl {
+  static void Main(){
+    var map = BaseMap.Load("base_map_01.txt"); var gen = new ObstacleGenerator(map);
+    var rows = new List<string>(); rows.Add("target,ptype,rep,llm_path_req,seed,path_on_ok,path_off_ok,ratio_off,contra_off");
+    foreach (var f in Directory.GetFiles("resp","*.txt").OrderBy(x=>x)){
+      var name=Path.GetFileNameWithoutExtension(f).Split('_'); // T01 D ZS r1
+      var rep=ParamSchema.Parse(File.ReadAllText(f)); var p=rep.Params; bool llmReq=p.PathRequired;
+      var pOn=Conditions.Clone(p); pOn.PathRequired=llmReq;   // 실험과 동일(LLM 값 그대로)
+      var pOff=Conditions.Clone(p); pOff.PathRequired=false;  // 경로 선확보 끔
+      for(int s=100;s<110;s++){
+        var a=gen.Generate(pOn,s,20); bool onOk=a.Success && ObstacleGenerator.PathExists(map,a.Obstacles);
+        var b=gen.Generate(pOff,s,20); bool offOk=b.Success && ObstacleGenerator.PathExists(map,b.Obstacles);
+        int obs=0,pl=0; if(b.Success){ for(int y=0;y<map.Height;y++)for(int x=0;x<map.Width;x++){ var t=map.Tiles[x,y]; if(t==BaseTile.Ground){pl++; if(b.Obstacles[x,y]!=ObstacleSet.Empty)obs++;}}}
+        rows.Add(string.Join(",",name[0],name[1],name[3],llmReq?1:0,s,onOk?1:0,offOk?1:0,pl>0?(obs/(double)pl).ToString("0.000"):"",b.Contradictions));
+      }
+    }
+    File.WriteAllLines("ablation.csv",rows); Console.WriteLine("rows "+(rows.Count-1));
+  }
+}

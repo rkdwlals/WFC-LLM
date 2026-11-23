@@ -1,0 +1,627 @@
+// Experiment.cs — 목표 맵 기반 실험 (교수님 피드백 반영판)
+//   targets : 정답 파라미터를 숨긴 목표 맵과 명시형 명령어를 만든다 → Experiment/v2/targets.json, grids/*.txt
+//   jobs    : targets.json(서술형 명령어 포함)으로 Unity가 보낼 LLM 요청 목록을 만든다 → jobs.json
+//   eval    : Unity가 저장한 응답으로 조건별 맵을 만들고 지표를 계산한다 → results.csv, consistency.csv
+using System; using System.Collections.Generic; using System.Globalization; using System.IO; using System.Linq; using System.Text;
+using ObstacleWFC;
+
+static class Experiment
+{
+    static BaseMap Map; static ObstacleGenerator Gen; static string Dir; static string MapPath;
+    static readonly string[] Reg = Regions.Names;
+    static readonly Dictionary<string, string> RegKo = new Dictionary<string, string> {
+        {"NW","북서"},{"N","북"},{"NE","북동"},{"W","서"},{"C","중앙"},{"E","동"},{"SW","남서"},{"S","남"},{"SE","남동"} };
+    static readonly string[] TagKo = { "", "바위", "벽", "상자", "수풀" };
+    static CultureInfo Inv = CultureInfo.InvariantCulture;
+
+    // 구역 패턴 (NW N NE / W C E / SW S SE 순서, H/M/L)
+    static readonly Dictionary<string, string> Pat = new Dictionary<string, string> {
+        {"P01","HHHMMMLLL"},{"P02","LLLMMMHHH"},{"P03","HMLHMLHML"},{"P04","LMHLMHLMH"},{"P05","LLLLHLLLL"},
+        {"P06","HHHHLHHHH"},{"P07","MMHMMMMMM"},{"P08","HHHHHHLHH"},{"P09","HLLLHLLLH"},{"P10","HHHHHHHHH"},
+        {"P11","LLLLLLLLL"},{"P12","HLHLLLHLH"},{"P13","LHLLHLLHL"},{"P14","LLLHHHLLL"},{"P15","LLHLHLHLL"},
+        {"P16","HHMHMMMMM"},{"P17","LLLLLHLHH"},{"P18","MMMMMMMMM"},{"P19","LLLMHMHHH"},{"P20","MMHMMHMMH"},
+        {"F01","HHMHMMMML"},{"F02","LLLMMMMMM"},{"F03","MMMMMMMMM"} };
+    // 종류 배수 프로필 (rock, wall, crate, bush)
+    static readonly Dictionary<string, double[]> Tag = new Dictionary<string, double[]> {
+        {"T0",new[]{1.0,1,1,1}},{"T1",new[]{4.0,1,1,1}},{"T2",new[]{0.3,3,3,0.3}},{"T3",new[]{2.0,0.2,0.2,3}},
+        {"T4",new[]{1.0,1,4,1}},{"T5",new[]{1.0,0,1,1}},{"T6",new[]{1.0,1,1,4}},{"T7",new[]{1.0,4,1,1}},
+        {"TF1",new[]{3.0,1,1,1}},{"TF2",new[]{0.3,3,3,0.3}},{"TF3",new[]{0.0,1,1,0}} };
+    // 시험용 목표 20개 + few-shot 예시용 3개 (예시는 시험용과 패턴·종류 조합이 다름)
+    static readonly string[][] Targets = {
+        new[]{"T01","P01","T1"},new[]{"T02","P02","T4"},new[]{"T03","P03","T3"},new[]{"T04","P04","T2"},new[]{"T05","P05","T7"},
+        new[]{"T06","P06","T2"},new[]{"T07","P07","T0"},new[]{"T08","P08","T3"},new[]{"T09","P09","T6"},new[]{"T10","P10","T3"},
+        new[]{"T11","P11","T7"},new[]{"T12","P12","T1"},new[]{"T13","P13","T5"},new[]{"T14","P14","T0"},new[]{"T15","P15","T4"},
+        new[]{"T16","P16","T6"},new[]{"T17","P17","T2"},new[]{"T18","P18","T1"},new[]{"T19","P19","T5"},new[]{"T20","P20","T6"},
+        new[]{"FS1","F01","TF1"},new[]{"FS2","F02","TF2"},new[]{"FS3","F03","TF3"} };
+
+    static GenerationParams Hidden(string pat, string tag)
+    {
+        var p = new GenerationParams();
+        string[] names = { "rock", "wall", "crate", "bush" };
+        for (int i = 0; i < 4; i++) p.TagMultipliers[names[i]] = Tag[tag][i];
+        for (int i = 0; i < 9; i++) p.RegionDensity[Reg[i]] = Pat[pat][i] == 'H' ? "high" : Pat[pat][i] == 'L' ? "low" : "mid";
+        p.PathRequired = true;
+        return p;
+    }
+
+    static double[] RegionVec(int[,] g) { var r = MapMetrics.RegionRatios(Map, g, GenerationParams.Default()); return Reg.Select(k => r[k]).ToArray(); }
+    static double[] Shares(int[,] g)
+    {
+        var c = MapMetrics.TagCounts(g); double tot = c.Skip(1).Sum();
+        return Enumerable.Range(1, 4).Select(t => tot == 0 ? 0 : c[t] / tot).ToArray();
+    }
+    static string GridText(int[,] g)
+    {
+        var sb = new StringBuilder();
+        for (int y = 0; y < Map.Height; y++)
+        {
+            for (int x = 0; x < Map.Width; x++)
+            {
+                var b = Map.Tiles[x, y];
+                char c = b == BaseTile.Water ? '~' : b == BaseTile.Road ? '=' : b == BaseTile.Spawn ? 'S' : b == BaseTile.Goal ? 'G' : DirectGrid.Symbols[g[x, y]];
+                sb.Append(c);
+            }
+            sb.Append('\n');
+        }
+        return sb.ToString();
+    }
+    static string R2(double v) { return (Math.Round(v * 20) / 20).ToString("0.00", Inv); }
+
+    static string ExplicitPrompt(int[,] g)
+    {
+        var rv = RegionVec(g); var sh = Shares(g);
+        var sb = new StringBuilder("구역별 장애물 밀도(장애물을 놓을 수 있는 칸 중 장애물 비율)를 ");
+        sb.Append(string.Join(", ", Enumerable.Range(0, 9).Select(i => RegKo[Reg[i]] + " " + R2(rv[i]))));
+        sb.Append("로 맞춰줘. 장애물 종류 비율은 ");
+        sb.Append(string.Join(", ", Enumerable.Range(0, 4).Select(i => TagKo[i + 1] + " " + (Math.Round(sh[i] * 20) * 5).ToString(Inv) + "%")));
+        sb.Append("로 해줘. 시작점에서 목표 지점까지 길은 남겨줘.");
+        return sb.ToString();
+    }
+
+    static void BuildTargets()
+    {
+        Directory.CreateDirectory(Path.Combine(Dir, "grids"));
+        var sb = new StringBuilder("{\"map\":" + MiniJson.Quote(MapPath) + ",\"targets\":[\n");
+        for (int i = 0; i < Targets.Length; i++)
+        {
+            string id = Targets[i][0]; var hp = Hidden(Targets[i][1], Targets[i][2]);
+            int seed = (id.StartsWith("FS") ? 6000 : 5000) + i;
+            var res = Gen.Generate(hp, seed);
+            var g = res.Obstacles;
+            File.WriteAllText(Path.Combine(Dir, "grids", id + ".txt"), GridText(g));
+            var rv = RegionVec(g); var sh = Shares(g);
+            sb.Append("{\"id\":").Append(MiniJson.Quote(id))
+              .Append(",\"role\":").Append(MiniJson.Quote(id.StartsWith("FS") ? "fewshot" : "test"))
+              .Append(",\"pattern\":").Append(MiniJson.Quote(Targets[i][1])).Append(",\"tags\":").Append(MiniJson.Quote(Targets[i][2]))
+              .Append(",\"seed\":").Append(seed)
+              .Append(",\"hidden\":").Append(ParamSchema.ToJson(hp))
+              .Append(",\"density\":").Append(MiniJson.Num(Math.Round(MapMetrics.ObstacleRatio(Map, g, hp), 4)))
+              .Append(",\"region\":[").Append(string.Join(",", rv.Select(v => MiniJson.Num(Math.Round(v, 4))))).Append("]")
+              .Append(",\"shares\":[").Append(string.Join(",", sh.Select(v => MiniJson.Num(Math.Round(v, 4))))).Append("]")
+              .Append(",\"explicit\":").Append(MiniJson.Quote(ExplicitPrompt(g)))
+              .Append(",\"descriptive\":\"\"}").Append(i < Targets.Length - 1 ? ",\n" : "\n");
+        }
+        sb.Append("]}\n");
+        File.WriteAllText(Path.Combine(Dir, "targets.json"), sb.ToString());
+        Console.WriteLine("targets.json, grids/ 작성: " + Targets.Length + "개");
+    }
+
+    static List<Dictionary<string, object>> LoadTargets()
+    {
+        var root = (Dictionary<string, object>)MiniJson.Parse(File.ReadAllText(Path.Combine(Dir, "targets.json")));
+        return ((List<object>)root["targets"]).Cast<Dictionary<string, object>>().ToList();
+    }
+    static string S(Dictionary<string, object> d, string k) { return d[k] as string; }
+
+    // 보류 표현 시험셋: heldout.json {"T01":{"chat":..,"doc":..}} → H1=chat, H2=doc
+    static Dictionary<string, object> Heldout()
+    {
+        string f = Path.Combine(Dir, "heldout.json");
+        return File.Exists(f) ? (Dictionary<string, object>)MiniJson.Parse(File.ReadAllText(f, Encoding.UTF8)) : null;
+    }
+    static string HText(Dictionary<string, object> h, string tid, string pt)
+    {
+        if (h == null || !h.ContainsKey(tid)) return null;
+        var d = (Dictionary<string, object>)h[tid]; string k = pt == "H1" ? "chat" : "doc";
+        return d.ContainsKey(k) ? (string)d[k] : null;
+    }
+
+    static void BuildJobs(int reps)
+    {
+        var ts = LoadTargets();
+        var pool = ts.Where(t => S(t, "role") == "fewshot").ToList();
+        var ex = new List<string[]>();
+        foreach (var t in pool)
+        {
+            string hj = MiniJson.Quote("x"); // placeholder
+            var hidden = (Dictionary<string, object>)t["hidden"];
+            string json = HiddenJson(hidden);
+            if (string.IsNullOrEmpty(S(t, "descriptive"))) throw new Exception(S(t, "id") + " 서술형 명령어 없음");
+            ex.Add(new[] { S(t, "descriptive"), json });
+            ex.Add(new[] { S(t, "explicit"), json });
+        }
+        var sb = new StringBuilder("{\"version\":\"v2\",\"created\":").Append(MiniJson.Quote(DateTime.Now.ToString("yyyy-MM-dd HH:mm")))
+            .Append(",\"systems\":{\"ZS\":").Append(MiniJson.Quote(Prompts.ParamsSystem(Map)))
+            .Append(",\"FS\":").Append(MiniJson.Quote(Prompts.ParamsSystemFewShot(Map, ex.ToArray())))
+            .Append(",\"B1\":").Append(MiniJson.Quote(Prompts.DirectSystem(Map)))
+            .Append(",\"A3\":").Append(MiniJson.Quote(Prompts.ParamsSystem(Map, false))).Append("},\"jobs\":[\n");
+        var jobs = new List<string>();
+        // 순서: 반복(rep)을 가장 바깥에 두어, 중간에 한도가 끝나도 모든 목표가 최소 1회씩 먼저 채워지게 한다
+        for (int r = 1; r <= reps; r++)
+            foreach (var t in ts.Where(t => S(t, "role") == "test"))
+                foreach (var pt in new[] { "D", "X" })
+                    foreach (var c in new[] { "ZS", "FS", "B1", "A3" })
+                    {
+                        if ((c == "B1" || c == "A3") && pt == "X") continue;   // A3: 보정 힌트 제거 Zero-shot (서술형만)
+                        string user = pt == "D" ? S(t, "descriptive") : S(t, "explicit");
+                        if (string.IsNullOrEmpty(user)) throw new Exception(S(t, "id") + " 명령어 없음");
+                        string id = S(t, "id") + "_" + pt + "_" + c + "_r" + r;
+                        jobs.Add("{\"id\":" + MiniJson.Quote(id) + ",\"system\":" + MiniJson.Quote(c) + ",\"user\":" + MiniJson.Quote(user) + "}");
+                    }
+        var ho = Heldout();   // 보류 표현(H1, H2): Zero-shot만
+        if (ho != null)
+            for (int r = 1; r <= reps; r++)
+                foreach (var t in ts.Where(t => S(t, "role") == "test"))
+                    foreach (var pt in new[] { "H1", "H2" })
+                    {
+                        string user = HText(ho, S(t, "id"), pt); if (string.IsNullOrEmpty(user)) continue;
+                        jobs.Add("{\"id\":" + MiniJson.Quote(S(t, "id") + "_" + pt + "_ZS_r" + r) + ",\"system\":\"ZS\",\"user\":" + MiniJson.Quote(user) + "}");
+                    }
+        sb.Append(string.Join(",\n", jobs)).Append("\n]}\n");
+        File.WriteAllText(Path.Combine(Dir, "jobs.json"), sb.ToString());
+        Console.WriteLine("jobs.json 작성: 요청 " + jobs.Count + "개");
+    }
+
+    // 모델 선정용 예비 실험: 본 실험 목표(T01~T20)는 쓰지 않고 예시용 목표(FS1~FS3)만 사용
+    static void BuildPilot(string outDir, int reps)
+    {
+        var ts = LoadTargets().Where(t => S(t, "role") == "fewshot").ToList();
+        var sb = new StringBuilder("{\"version\":\"pilot\",\"created\":").Append(MiniJson.Quote(DateTime.Now.ToString("yyyy-MM-dd HH:mm")))
+            .Append(",\"systems\":{\"ZS\":").Append(MiniJson.Quote(Prompts.ParamsSystem(Map)))
+            .Append(",\"B1\":").Append(MiniJson.Quote(Prompts.DirectSystem(Map))).Append("},\"jobs\":[\n");
+        var jobs = new List<string>();
+        for (int r = 1; r <= reps; r++)   // 반복을 바깥에 둬서 중간에 멈춰도 모든 조건이 고르게 쌓이게 함
+        foreach (var t in ts)
+            foreach (var job in new[] { new[] { "D", "ZS" }, new[] { "X", "ZS" }, new[] { "D", "B1" } })
+            {
+                string user = job[0] == "D" ? S(t, "descriptive") : S(t, "explicit");
+                jobs.Add("{\"id\":" + MiniJson.Quote(S(t, "id") + "_" + job[0] + "_" + job[1] + "_r" + r) + ",\"system\":" + MiniJson.Quote(job[1]) + ",\"user\":" + MiniJson.Quote(user) + "}");
+            }
+        sb.Append(string.Join(",\n", jobs)).Append("\n]}\n");
+        Directory.CreateDirectory(outDir);
+        File.WriteAllText(Path.Combine(outDir, "jobs.json"), sb.ToString());
+        Console.WriteLine(outDir + "/jobs.json: 요청 " + jobs.Count + "개");
+    }
+
+    static string HiddenJson(Dictionary<string, object> h)
+    {
+        var p = ToParams(h);
+        return ParamSchema.ToJson(p);
+    }
+    static GenerationParams ToParams(Dictionary<string, object> h)
+    {
+        var rep = ParamSchema.Parse(ToJsonObj(h));
+        return rep.Params;
+    }
+    static string ToJsonObj(object o)
+    {
+        if (o is Dictionary<string, object>) return "{" + string.Join(",", ((Dictionary<string, object>)o).Select(kv => MiniJson.Quote(kv.Key) + ":" + ToJsonObj(kv.Value))) + "}";
+        if (o is List<object>) return "[" + string.Join(",", ((List<object>)o).Select(ToJsonObj)) + "]";
+        if (o is string) return MiniJson.Quote((string)o);
+        if (o is bool) return (bool)o ? "true" : "false";
+        if (o == null) return "null";
+        return MiniJson.Num(Convert.ToDouble(o, Inv));
+    }
+
+    // ───────── eval ─────────
+    class MapRes { public int[,] G; public List<int[]> Path; public double[] Rv; public double[] Sh; public double[] Bv; public double Cl; }
+    static MapRes Info(int[,] g) { return new MapRes { G = g, Path = PathMetrics.ShortestPath(Map, g), Rv = RegionVec(g), Sh = Shares(g), Bv = BlockVec(g), Cl = ClusterMean(g) }; }
+
+    // 파라미터 단위(3×3 구역)와 무관한 지표 ── 순환성 완화용
+    // 4×4칸 블록(32×32 맵 → 8×8=64블록)의 장애물 비율. 놓을 수 있는 칸이 없는 블록은 NaN
+    const int Blk = 4;
+    static double[] BlockVec(int[,] g)
+    {
+        int bw = Map.Width / Blk, bh = Map.Height / Blk; var v = new double[bw * bh];
+        for (int by = 0; by < bh; by++)
+            for (int bx = 0; bx < bw; bx++)
+            {
+                int tot = 0, fil = 0;
+                for (int y = by * Blk; y < (by + 1) * Blk; y++)
+                    for (int x = bx * Blk; x < (bx + 1) * Blk; x++)
+                    {
+                        var b = Map.Tiles[x, y];
+                        if (b != BaseTile.Ground) continue;
+                        tot++; if (g[x, y] != 0) fil++;
+                    }
+                v[by * bw + bx] = tot == 0 ? double.NaN : (double)fil / tot;
+            }
+        return v;
+    }
+    // 장애물 군집(상하좌우로 이어진 장애물 덩어리)의 평균 크기
+    static double ClusterMean(int[,] g)
+    {
+        int W = Map.Width, H = Map.Height; var seen = new bool[W, H]; int n = 0, sum = 0;
+        var st = new Stack<int[]>();
+        for (int y = 0; y < H; y++)
+            for (int x = 0; x < W; x++)
+            {
+                if (g[x, y] == 0 || seen[x, y]) continue;
+                n++; int size = 0; st.Push(new[] { x, y }); seen[x, y] = true;
+                while (st.Count > 0)
+                {
+                    var c = st.Pop(); size++;
+                    foreach (var d in new[] { new[] { 1, 0 }, new[] { -1, 0 }, new[] { 0, 1 }, new[] { 0, -1 } })
+                    {
+                        int nx = c[0] + d[0], ny = c[1] + d[1];
+                        if (nx < 0 || ny < 0 || nx >= W || ny >= H || seen[nx, ny] || g[nx, ny] == 0) continue;
+                        seen[nx, ny] = true; st.Push(new[] { nx, ny });
+                    }
+                }
+                sum += size;
+            }
+        return n == 0 ? 0 : (double)sum / n;
+    }
+    static double[] BlockCmp(double[] a, double[] b)
+    {   // [상관, 평균 절대 오차] — 양쪽 다 값이 있는 블록만
+        var idx = Enumerable.Range(0, a.Length).Where(i => !double.IsNaN(a[i]) && !double.IsNaN(b[i])).ToArray();
+        var x = idx.Select(i => a[i]).ToArray(); var y = idx.Select(i => b[i]).ToArray();
+        return new[] { PathMetrics.Pearson(x, y), idx.Average(i => Math.Abs(a[i] - b[i])) };
+    }
+    static string F(double v) { return double.IsNaN(v) ? "" : v.ToString("0.####", Inv); }
+
+    // ── 다양성: 같은 파라미터(같은 응답)에서 seed만 바꾼 맵끼리 얼마나 다른가 (results.csv는 건드리지 않음)
+    // tile_div: 지면 칸 중 타일 종류가 다른 칸 비율 / occ_div: 지면 칸 중 장애물 유무가 다른 칸 비율 (쌍 평균)
+    static double[] PairDiv(List<int[,]> ms)
+    {
+        double st = 0, so = 0; int n = 0;
+        for (int a = 0; a < ms.Count; a++)
+            for (int b = a + 1; b < ms.Count; b++)
+            {
+                int tot = 0, dt = 0, dO = 0;
+                for (int y = 0; y < Map.Height; y++)
+                    for (int x = 0; x < Map.Width; x++)
+                    {
+                        if (Map.Tiles[x, y] != BaseTile.Ground) continue;
+                        tot++; int u = ms[a][x, y], v = ms[b][x, y];
+                        if (u != v) dt++; if ((u != 0) != (v != 0)) dO++;
+                    }
+                st += (double)dt / tot; so += (double)dO / tot; n++;
+            }
+        return n == 0 ? new[] { double.NaN, double.NaN } : new[] { st / n, so / n };
+    }
+    static void Diversity(string respDir, int nSeeds)
+    {
+        var sb = new StringBuilder("target,ptype,cond,rep,kind,n_maps,tile_div,occ_div\n");
+        int[] seeds = Enumerable.Range(0, nSeeds).Select(s => 100 + s).ToArray();
+        var hoE = Heldout();
+        Action<string, string, string, int, string, List<int[,]>> add = (tid, pt, cond, r, kind, ms) =>
+        { var d = PairDiv(ms); sb.Append(string.Join(",", tid, pt, cond, r, kind, ms.Count, F(d[0]), F(d[1]))).Append('\n'); };
+        Func<GenerationParams, List<int[,]>> gen = p => seeds.Select(s => Gen.Generate(p, s).Obstacles).ToList();
+        foreach (var t in LoadTargets().Where(x => S(x, "role") == "test"))
+        {
+            string tid = S(t, "id"); var hp = ToParams((Dictionary<string, object>)t["hidden"]);
+            add(tid, "-", "B0", 0, "seed", gen(GenerationParams.Default()));
+            add(tid, "-", "UB", 0, "seed", gen(hp));
+            foreach (var pt in new[] { "D", "X", "H1", "H2" })
+            {
+                bool isH = pt == "H1" || pt == "H2";
+                if (isH && HText(hoE, tid, pt) == null) continue;
+                var pb = pt == "D" ? RuleBaseline.Descriptive(S(t, "descriptive")) : isH ? RuleBaseline.Descriptive(HText(hoE, tid, pt)) : RuleBaseline.Explicit(S(t, "explicit"));
+                add(tid, pt, "B2", 1, "seed", gen(pb));
+                foreach (var cond in new[] { "ZS", "FS", "A3" })
+                {
+                    var repSeed0 = new List<int[,]>();
+                    for (int r = 1; r <= 3; r++)
+                    {
+                        string f = Path.Combine(respDir, tid + "_" + pt + "_" + cond + "_r" + r + ".txt");
+                        if (!File.Exists(f)) continue;
+                        var rep = ParamSchema.Parse(File.ReadAllText(f));
+                        var ms = gen(rep.JsonFound ? rep.Params : GenerationParams.Default());
+                        add(tid, pt, cond, r, "seed", ms); repSeed0.Add(ms[0]);
+                    }
+                    if (repSeed0.Count > 1) add(tid, pt, cond, 0, "rep_sameseed", repSeed0);
+                }
+                if (pt == "D")
+                {   // B1s: seed가 없으므로 반복 호출(rep) 사이의 차이만 계산 가능
+                    var bs = new List<int[,]>();
+                    for (int r = 1; r <= 3; r++)
+                    {
+                        string f = Path.Combine(respDir, tid + "_D_B1_r" + r + ".txt");
+                        if (!File.Exists(f)) continue;
+                        int nr; var g = ParseSalvage(File.ReadAllText(f), out nr); if (g != null) bs.Add(g);
+                    }
+                    if (bs.Count > 1) add(tid, pt, "B1s", 0, "rep", bs);
+                }
+            }
+        }
+        // 참고값: 서로 다른 목표 맵의 정답 파라미터로 같은 seed에서 만든 맵끼리의 차이 (목표가 다르면 얼마나 다른가)
+        foreach (var sd in seeds)
+            add("ALL", "-", "UB_cross", sd, "cross_target", LoadTargets().Where(x => S(x, "role") == "test").Select(x => Gen.Generate(ToParams((Dictionary<string, object>)x["hidden"]), sd).Obstacles).ToList());
+        File.WriteAllText(Path.Combine(Dir, "diversity.csv"), sb.ToString(), new UTF8Encoding(false));
+        Console.WriteLine("diversity.csv 작성");
+    }
+
+    // 2026-11-19 추가: 지정한 명령어 파일(cmds.json: {"T01":{"D":"..","H1":"..","H2":".."}})로 B0·UB·B2·ZS를 평가한다.
+    //   X(명시형)는 targets.json의 explicit을 쓴다. ZS 응답은 respDir/<tid>_<pt>_ZS_r<n>.txt.
+    //   anchors=true이면 B2에 맵 의존 위치어(시작점·목표·다리·강 방향)를 현재 맵에 맞춘 RuleBaselineM을 쓴다(언어 사전은 고정본과 동일).
+    static void EvalX(string respDir, string cmdsPath, string outName, bool anchors)
+    {
+        if (anchors) RuleBaselineM.SetAnchors(Map);
+        var cmds = (Dictionary<string, object>)MiniJson.Parse(File.ReadAllText(cmdsPath, Encoding.UTF8));
+        var ts = LoadTargets().Where(t => S(t, "role") == "test").ToList();
+        var outR = new StringBuilder("target,ptype,cond,rep,seed,json_found,pure_json,schema_valid,format_valid,region_corr,region_mae,density_err,type_l1,adj_viol,forbid_viol,path_ok,path_len,pathcorr_offset,pathcorr_xy,path_dist,level_agree,top_tag_agree,b1_readable,block_corr,block_mae,cluster_err,pathlen_diff\n");
+        int[] seeds = Enumerable.Range(0, 10).Select(s => 100 + s).ToArray();
+        int missing = 0, used = 0;
+        foreach (var t in ts)
+        {
+            string tid = S(t, "id");
+            var tg = ReadGrid(Path.Combine(Dir, "grids", tid + ".txt"));
+            var T = Info(tg); var hp = ToParams((Dictionary<string, object>)t["hidden"]);
+            foreach (var cond in new[] { "B0", "UB" })
+            {
+                var p = cond == "B0" ? GenerationParams.Default() : hp;
+                for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, "-", cond, 0, seeds[i], null, Info(Gen.Generate(p, seeds[i]).Obstacles), T, p, hp));
+            }
+            var tc = cmds.ContainsKey(tid) ? (Dictionary<string, object>)cmds[tid] : new Dictionary<string, object>();
+            var pts = tc.Keys.ToList(); if (!pts.Contains("X")) pts.Add("X");
+            foreach (var pt in pts)
+            {
+                string text = pt == "X" ? S(t, "explicit") : (string)tc[pt];
+                bool isX = pt == "X";
+                var pb = isX ? (anchors ? RuleBaselineM.Explicit(text) : RuleBaseline.Explicit(text))
+                             : (anchors ? RuleBaselineM.Descriptive(text) : RuleBaseline.Descriptive(text));
+                for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, pt, "B2", 1, seeds[i], null, Info(Gen.Generate(pb, seeds[i]).Obstacles), T, pb, hp));
+                for (int r = 1; r <= 3; r++)
+                {
+                    string f = Path.Combine(respDir, tid + "_" + pt + "_ZS_r" + r + ".txt");
+                    if (!File.Exists(f)) { missing++; continue; }
+                    used++;
+                    var rep = ParamSchema.Parse(File.ReadAllText(f));
+                    var p = rep.JsonFound ? rep.Params : GenerationParams.Default();
+                    for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, pt, "ZS", r, seeds[i], rep, Info(Gen.Generate(p, seeds[i]).Obstacles), T, p, hp));
+                }
+            }
+        }
+        File.WriteAllText(Path.Combine(Dir, outName), outR.ToString(), new UTF8Encoding(false));
+        Console.WriteLine(outName + " 작성. 사용한 응답 " + used + "개, 없는 응답 " + missing + "개");
+    }
+
+    static string EvalRole = "test";
+    static void Eval(string respDir, int nSeeds)
+    {
+        var ts = LoadTargets().Where(t => S(t, "role") == EvalRole).ToList();
+        var outR = new StringBuilder("target,ptype,cond,rep,seed,json_found,pure_json,schema_valid,format_valid,region_corr,region_mae,density_err,type_l1,adj_viol,forbid_viol,path_ok,path_len,pathcorr_offset,pathcorr_xy,path_dist,level_agree,top_tag_agree,b1_readable,block_corr,block_mae,cluster_err,pathlen_diff\n");
+        var outC = new StringBuilder("target,ptype,cond,kind,a,b,region_corr,pathcorr_offset,pathcorr_xy,path_dist,level_agree\n");
+        int[] seeds = Enumerable.Range(0, nSeeds).Select(s => 100 + s).ToArray();
+        int missing = 0;
+        foreach (var t in ts)
+        {
+            string tid = S(t, "id");
+            var tg = ReadGrid(Path.Combine(Dir, "grids", tid + ".txt"));
+            var T = Info(tg); var hp = ToParams((Dictionary<string, object>)t["hidden"]);
+            // 기준선: B0(LLM 없음), UB(정답 파라미터 = 상한)
+            foreach (var cond in new[] { "B0", "UB" })
+            {
+                var p = cond == "B0" ? GenerationParams.Default() : hp;
+                var maps = seeds.Select(s => Info(Gen.Generate(p, s).Obstacles)).ToList();
+                for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, "-", cond, 0, seeds[i], null, maps[i], T, p, hp));
+                SeedPairs(outC, tid, "-", cond, maps);
+            }
+            var hoE = Heldout();
+            foreach (var pt in new[] { "D", "X", "H1", "H2" })
+            {
+                bool isH = pt == "H1" || pt == "H2";
+                if (isH && HText(hoE, tid, pt) == null) continue;
+                {   // B2: 규칙 기반 기준선 (LLM 없음, 결정적이라 반복 없음)
+                    var pb = pt == "D" ? RuleBaseline.Descriptive(S(t, "descriptive")) : isH ? RuleBaseline.Descriptive(HText(hoE, tid, pt)) : RuleBaseline.Explicit(S(t, "explicit"));
+                    var maps = seeds.Select(s => Info(Gen.Generate(pb, s).Obstacles)).ToList();
+                    for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, pt, "B2", 1, seeds[i], null, maps[i], T, pb, hp));
+                }
+                foreach (var cond in new[] { "ZS", "FS", "A3" })
+                {
+                    if (cond == "A3" && (pt != "D" || !File.Exists(Path.Combine(respDir, tid + "_D_A3_r1.txt")))) continue;
+                    if (isH && (cond != "ZS" || !File.Exists(Path.Combine(respDir, tid + "_" + pt + "_ZS_r1.txt")))) continue;
+                    var perRep = new List<List<MapRes>>(); var repParams = new List<GenerationParams>();
+                    for (int r = 1; ; r++)
+                    {
+                        string f = Path.Combine(respDir, tid + "_" + pt + "_" + cond + "_r" + r + ".txt");
+                        if (!File.Exists(f)) { if (r <= 3) missing++; if (r > 3) break; else continue; }
+                        var rep = ParamSchema.Parse(File.ReadAllText(f));
+                        var p = rep.JsonFound ? rep.Params : GenerationParams.Default();
+                        repParams.Add(p);
+                        var maps = seeds.Select(s => Info(Gen.Generate(p, s).Obstacles)).ToList();
+                        perRep.Add(maps);
+                        for (int i = 0; i < seeds.Length; i++) outR.Append(Row(tid, pt, cond, r, seeds[i], rep, maps[i], T, p, hp));
+                        if (cond == "ZS" && !isH)
+                        {   // A1: 구역 밀도 제거 (추가 호출 없음)
+                            var pa = Conditions.ParamsFor(Condition.A1_NoRegion, p);
+                            for (int i = 0; i < seeds.Length; i++) { var m = Info(Gen.Generate(pa, seeds[i]).Obstacles); outR.Append(Row(tid, pt, "A1", r, seeds[i], rep, m, T, pa, hp)); }
+                        }
+                    }
+                    // 일관성: 같은 seed에서 반복(rep)끼리 비교 → LLM 해석의 변동만 남는다
+                    for (int a = 0; a < perRep.Count; a++)
+                        for (int b = a + 1; b < perRep.Count; b++)
+                        {
+                            double la = Reg.Count(k => Lv(repParams[a], k) == Lv(repParams[b], k)) / 9.0;
+                            for (int i = 0; i < seeds.Length; i++)
+                            {
+                                var c = PathMetrics.Compare(Map, perRep[a][i].Path, perRep[b][i].Path);
+                                outC.Append(string.Join(",", tid, pt, cond, "rep", a + 1, b + 1, F(PathMetrics.Pearson(perRep[a][i].Rv, perRep[b][i].Rv)), F(c[0]), F(c[1]), F(c[2]), F(la))).Append('\n');
+                            }
+                        }
+                    if (perRep.Count > 0) SeedPairs(outC, tid, pt, cond, perRep[0]);
+                }
+                if (pt == "D")
+                {
+                    for (int r = 1; ; r++)
+                    {
+                        string f = Path.Combine(respDir, tid + "_D_B1_r" + r + ".txt");
+                        if (!File.Exists(f)) { if (r <= 3) { missing++; continue; } break; }
+                        string txt = File.ReadAllText(f);
+                        var dr = DirectGrid.Parse(txt, Map.Width, Map.Height);
+                        int[,] lg = dr.FormatValid ? dr.Obstacles : ParseLenient(txt);
+                        if (lg == null) outR.Append(string.Join(",", tid, pt, "B1", r, "-", "", "", "", "0")).Append(",,,,,,,,,,,,,0,,,,\n");
+                        else outR.Append(Row(tid, pt, "B1", r, 0, null, Info(lg), T, GenerationParams.Default(), hp, true, dr.FormatValid ? "1" : "0"));
+                        // B1s: 최대한 살려서 평가 (칸 사이 공백 제거, 모자란 칸·행은 빈 칸으로 채움, 위쪽 정렬 가정)
+                        int nRows; var sg = ParseSalvage(txt, out nRows);
+                        if (sg == null) outR.Append(string.Join(",", tid, pt, "B1s", r, "-", "", "", "", "0")).Append(",,,,,,,,,,,,,0,,,,\n");
+                        else outR.Append(Row(tid, pt, "B1s", r, 0, null, Info(sg), T, GenerationParams.Default(), hp, true, nRows.ToString()));
+                    }
+                }
+            }
+        }
+        File.WriteAllText(Path.Combine(Dir, "results.csv"), outR.ToString(), new UTF8Encoding(false));
+        File.WriteAllText(Path.Combine(Dir, "consistency.csv"), outC.ToString(), new UTF8Encoding(false));
+        Console.WriteLine("results.csv, consistency.csv 작성. 없는 응답 파일 " + missing + "개");
+    }
+
+    static void SeedPairs(StringBuilder outC, string tid, string pt, string cond, List<MapRes> maps)
+    {   // 같은 파라미터에서 seed끼리 비교 → WFC 자체의 변동
+        for (int a = 0; a < maps.Count; a++)
+            for (int b = a + 1; b < maps.Count; b++)
+            {
+                var c = PathMetrics.Compare(Map, maps[a].Path, maps[b].Path);
+                outC.Append(string.Join(",", tid, pt, cond, "seed", a, b, F(PathMetrics.Pearson(maps[a].Rv, maps[b].Rv)), F(c[0]), F(c[1]), F(c[2]), "")).Append('\n');
+            }
+    }
+
+    static string Lv(GenerationParams p, string r) { string v; return p.RegionDensity.TryGetValue(r, out v) ? v : "mid"; }
+    static string TopTag(GenerationParams p)
+    {
+        string[] n = { "rock", "wall", "crate", "bush" };
+        var vals = n.Select(k => { double v; return p.TagMultipliers.TryGetValue(k, out v) ? v : 1.0; }).ToArray();
+        double mx = vals.Max(); if (vals.All(v => Math.Abs(v - mx) < 1e-9)) return "none";
+        return string.Join("+", Enumerable.Range(0, 4).Where(i => Math.Abs(vals[i] - mx) < 1e-9).Select(i => n[i]));
+    }
+
+    static string Row(string tid, string pt, string cond, int rep, int seed, ParseReport pr, MapRes m, MapRes T, GenerationParams p, GenerationParams hp, bool direct = false, string strict = "")
+    {
+        if ((seed == 100 || direct) && rep <= 1)
+        {   // 3D 비교 화면용 대표 맵 (seed 100, 첫 번째 응답)
+            string md = Path.Combine(Dir, "maps"); Directory.CreateDirectory(md);
+            File.WriteAllText(Path.Combine(md, tid + "_" + (pt == "-" ? "" : pt + "_") + cond + ".txt"), GridText(m.G));
+        }
+        var c = PathMetrics.Compare(Map, m.Path, T.Path);
+        var bc = BlockCmp(m.Bv, T.Bv);
+        double dens = MapMetrics.ObstacleRatio(Map, m.G, GenerationParams.Default()), tdens = MapMetrics.ObstacleRatio(Map, T.G, GenerationParams.Default());
+        double mae = Enumerable.Range(0, 9).Average(i => Math.Abs(m.Rv[i] - T.Rv[i]));
+        double l1 = Enumerable.Range(0, 4).Sum(i => Math.Abs(m.Sh[i] - T.Sh[i]));
+        string la = "", tt = "";
+        if (cond == "ZS" || cond == "FS" || cond == "A3" || cond == "B2") { la = F(Reg.Count(k => Lv(p, k) == Lv(hp, k)) / 9.0); tt = TopTag(p) == TopTag(hp) ? "1" : "0"; }
+        return string.Join(",", tid, pt, cond, rep, seed,
+            pr == null ? "" : (pr.JsonFound ? "1" : "0"), pr == null ? "" : (pr.PureJson ? "1" : "0"), pr == null ? "" : (pr.SchemaValid ? "1" : "0"),
+            strict,
+            F(PathMetrics.Pearson(m.Rv, T.Rv)), F(mae), F(Math.Abs(dens - tdens)), F(l1),
+            MapMetrics.AdjacencyViolations(m.G), MapMetrics.ForbiddenViolations(Map, m.G, GenerationParams.Default()),
+            m.Path != null ? "1" : "0", m.Path != null ? m.Path.Count.ToString() : "",
+            F(c[0]), F(c[1]), F(c[2]), la, tt, direct ? "1" : "",
+            F(bc[0]), F(bc[1]), F(T.Cl == 0 ? double.NaN : Math.Abs(m.Cl - T.Cl) / T.Cl),
+            m.Path != null && T.Path != null ? Math.Abs(m.Path.Count - T.Path.Count).ToString() : "") + "\n";
+    }
+
+    // B1 느슨한 해석: 형식을 어긴 응답도 읽을 수 있으면 읽는다.
+    // 허용 기호(. R W C B ~ = S G)로만 된 줄 중 길이가 W±2인 줄을 위에서부터 H개 사용. 짧으면 빈 칸으로 채우고 길면 자른다.
+    // 베이스 기호(~ = S G)는 빈 칸으로 본다. 물 위치에 놓인 장애물은 금지 위치 위반으로 따로 센다.
+    static int[,] ParseLenient(string text)
+    {
+        var rows = new List<string>();
+        foreach (var raw in text.Replace("\r", "").Split('\n'))
+        {
+            string l = raw.Trim().Trim('`').Trim();
+            if (l.Length < Map.Width - 2 || l.Length > Map.Width + 2) continue;
+            if (l.Any(ch => ".RWCB~=SG".IndexOf(ch) < 0)) continue;
+            rows.Add(l);
+            if (rows.Count == Map.Height) break;
+        }
+        if (rows.Count < Map.Height) return null;
+        var g = new int[Map.Width, Map.Height];
+        for (int y = 0; y < Map.Height; y++)
+            for (int x = 0; x < Map.Width; x++)
+            {
+                char ch = x < rows[y].Length ? rows[y][x] : '.';
+                int k = "RWCB".IndexOf(ch);
+                g[x, y] = k < 0 ? 0 : k + 1;
+            }
+        return g;
+    }
+
+    // 살려서 읽기: 허용 기호만 있는 줄을 모아 공백을 지우고, 폭·행이 모자라면 빈 칸으로 채운다. 줄이 하나도 없으면 null.
+    static int[,] ParseSalvage(string text, out int nRows)
+    {
+        var rows = new List<string>();
+        foreach (var raw in text.Replace("\r", "").Split('\n'))
+        {
+            string l = new string(raw.Trim().Trim('`').Where(ch => !char.IsWhiteSpace(ch)).ToArray());
+            if (l.Length < 4 || l.Any(ch => ".RWCB~=SG".IndexOf(ch) < 0)) continue;
+            rows.Add(l);
+            if (rows.Count == Map.Height) break;
+        }
+        nRows = rows.Count;
+        if (rows.Count == 0) return null;
+        var g = new int[Map.Width, Map.Height];
+        for (int y = 0; y < Map.Height && y < rows.Count; y++)
+            for (int x = 0; x < Map.Width; x++)
+            {
+                char ch = x < rows[y].Length ? rows[y][x] : '.';
+                int k = "RWCB".IndexOf(ch);
+                g[x, y] = k < 0 ? 0 : k + 1;
+            }
+        return g;
+    }
+
+    static int[,] ReadGrid(string f)
+    {
+        var lines = File.ReadAllLines(f).Where(l => l.Trim().Length > 0).ToArray();
+        var g = new int[Map.Width, Map.Height];
+        for (int y = 0; y < Map.Height; y++)
+            for (int x = 0; x < Map.Width; x++) { int k = DirectGrid.Symbols.IndexOf(lines[y][x]); g[x, y] = k < 0 ? 0 : k; }
+        return g;
+    }
+
+    static void Main(string[] a)
+    {
+        Console.OutputEncoding = new UTF8Encoding(false);
+        string mode = a.Length > 0 ? a[0] : "";
+        Dir = a.Length > 1 ? a[1] : "Experiment/v2";
+        string mapPath = a.Length > 2 ? a[2] : "Maps/base_map_01.txt";
+        MapPath = mapPath; Map = BaseMap.Parse(File.ReadAllText(mapPath)); Gen = new ObstacleGenerator(Map);
+        if (mode == "targets") BuildTargets();
+        else if (mode == "jobs") BuildJobs(a.Length > 3 ? int.Parse(a[3]) : 3);
+        else if (mode == "pilot") BuildPilot(a[3], a.Length > 4 ? int.Parse(a[4]) : 1);
+        else if (mode == "corrcheck")
+        {   // 같은 seed, 다른 파라미터(B0 vs 정답)에서도 경로 모양이 비슷한가 → 통로 선확보(seed로 결정)의 영향 확인
+            var sameSeed = new List<double>(); var diffSeed = new List<double>();
+            foreach (var t in LoadTargets().Where(x => S(x, "role") == "test"))
+            {
+                var hp = ToParams((Dictionary<string, object>)t["hidden"]);
+                for (int sd = 100; sd < 110; sd++)
+                {
+                    var m0 = Info(Gen.Generate(GenerationParams.Default(), sd).Obstacles);
+                    var m1 = Info(Gen.Generate(hp, sd).Obstacles);
+                    var m2 = Info(Gen.Generate(hp, sd + 1000).Obstacles);
+                    double v1 = PathMetrics.Compare(Map, m0.Path, m1.Path)[0], v2 = PathMetrics.Compare(Map, m1.Path, m2.Path)[0];
+                    if (!double.IsNaN(v1)) sameSeed.Add(v1); if (!double.IsNaN(v2)) diffSeed.Add(v2);
+                }
+            }
+            Console.WriteLine("같은 seed·다른 파라미터(B0 vs 정답) 경로 모양 상관 평균 " + sameSeed.Average().ToString("0.000") + " (n=" + sameSeed.Count + ")");
+            Console.WriteLine("같은 파라미터·다른 seed 경로 모양 상관 평균 " + diffSeed.Average().ToString("0.000") + " (n=" + diffSeed.Count + ")");
+        }
+        else if (mode == "rules")
+        {   // 규칙 기반 해석 결과 확인용 (정답과 비교하지 않음)
+            foreach (var t in LoadTargets().Where(x => S(x, "role") == "test"))
+                foreach (var pt in new[] { "D", "X" })
+                {
+                    var p = pt == "D" ? RuleBaseline.Descriptive(S(t, "descriptive")) : RuleBaseline.Explicit(S(t, "explicit"));
+                    Console.WriteLine(S(t, "id") + " " + pt + " " + ParamSchema.ToJson(p));
+                }
+        }
+        else if (mode == "sysprompt") File.WriteAllText(a[3], Prompts.ParamsSystem(Map), new UTF8Encoding(false));
+        else if (mode == "anchors") { RuleBaselineM.SetAnchors(Map); Console.WriteLine(RuleBaselineM.AnchorsText()); }
+        else if (mode == "evalx") EvalX(a[3], a[4], a[5], a.Length > 6 && a[6] == "anchors");
+        else if (mode == "diversity") Diversity(a[3], a.Length > 4 ? int.Parse(a[4]) : 10);
+        else if (mode == "evalpilot") { EvalRole = "fewshot"; Eval(a[3], a.Length > 4 ? int.Parse(a[4]) : 10); }
+        else if (mode == "eval") Eval(a.Length > 3 ? a[3] : Path.Combine(Dir, "responses"), a.Length > 4 ? int.Parse(a[4]) : 10);
+        else Console.WriteLine("사용법: experiment.exe targets|jobs|eval [폴더] [맵] [jobs: 반복 수 | eval: 응답 폴더] [eval: seed 수]");
+    }
+}

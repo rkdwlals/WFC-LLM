@@ -1,0 +1,642 @@
+{
+ "version": 1,
+ "note": "criteria는 실험 전에 고정한 정답 기준. reference_params는 기준이 달성 가능한지 확인하는 용도로만 쓰며 실험 결과에는 쓰지 않는다.",
+ "thresholds": {
+  "dense": 0.4,
+  "sparse": 0.2,
+  "ratio": 1.5,
+  "center_empty": 0.4,
+  "majority": 0.5,
+  "group": 0.75,
+  "goal_region": 0.45
+ },
+ "prompts": [
+  {
+   "id": "D1",
+   "type": "밀도",
+   "text": "장애물을 빽빽하게 배치해줘",
+   "criteria": "density >= 0.40",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "D2",
+   "type": "밀도",
+   "text": "장애물은 아주 조금만 놓아줘",
+   "criteria": "density <= 0.20",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "low",
+     "N": "low",
+     "NE": "low",
+     "W": "low",
+     "C": "low",
+     "E": "low",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "D3",
+   "type": "밀도",
+   "text": "탁 트인 느낌의 맵으로 만들어줘",
+   "criteria": "density <= 0.20",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "low",
+     "N": "low",
+     "NE": "low",
+     "W": "low",
+     "C": "low",
+     "E": "low",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "D4",
+   "type": "밀도",
+   "text": "숨을 곳이 많은 복잡한 맵이 필요해",
+   "criteria": "density >= 0.40",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "D5",
+   "type": "밀도",
+   "text": "장애물이 거의 없는 평원처럼 해줘",
+   "criteria": "density <= 0.20",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "low",
+     "N": "low",
+     "NE": "low",
+     "W": "low",
+     "C": "low",
+     "E": "low",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "D6",
+   "type": "밀도",
+   "text": "지나다니기 힘들 정도로 장애물을 채워줘",
+   "criteria": "density >= 0.40",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C1",
+   "type": "구성",
+   "text": "바위 위주로 배치해줘",
+   "criteria": "share_rock >= 0.5",
+   "reference_params": {
+    "tag_multipliers": {
+     "rock": 4
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C2",
+   "type": "구성",
+   "text": "벽은 하나도 쓰지 마",
+   "criteria": "share_wall <= 0.02",
+   "reference_params": {
+    "tag_multipliers": {
+     "wall": 0
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C3",
+   "type": "구성",
+   "text": "상자랑 벽으로만 채워줘",
+   "criteria": "share_wall + share_crate >= 0.9",
+   "reference_params": {
+    "tag_multipliers": {
+     "rock": 0,
+     "bush": 0
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C4",
+   "type": "구성",
+   "text": "자연스러운 숲 느낌으로 만들어줘",
+   "criteria": "share_bush + share_rock >= 0.75",
+   "reference_params": {
+    "tag_multipliers": {
+     "bush": 4,
+     "rock": 2,
+     "wall": 0.2,
+     "crate": 0.2
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C5",
+   "type": "구성",
+   "text": "인공 구조물이 많은 폐허 도시 느낌으로 해줘",
+   "criteria": "share_wall + share_crate >= 0.75",
+   "reference_params": {
+    "tag_multipliers": {
+     "wall": 3,
+     "crate": 3,
+     "rock": 0.3,
+     "bush": 0.3
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "C6",
+   "type": "구성",
+   "text": "수풀을 주로 쓰고 상자는 조금만 넣어줘",
+   "criteria": "share_bush >= 0.4 & share_crate <= 0.15",
+   "reference_params": {
+    "tag_multipliers": {
+     "bush": 4,
+     "crate": 0.3
+    },
+    "region_density": {},
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S1",
+   "type": "공간",
+   "text": "북쪽에 장애물을 몰아줘",
+   "criteria": "north >= 1.5*south",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S2",
+   "type": "공간",
+   "text": "남쪽은 비워두고 북쪽만 채워줘",
+   "criteria": "north >= 1.5*south & south <= 0.20",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S3",
+   "type": "공간",
+   "text": "맵 가장자리를 따라 장애물을 두고 가운데는 비워줘",
+   "criteria": "center <= 0.4*outer",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high",
+     "C": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S4",
+   "type": "공간",
+   "text": "가운데에 장애물을 모아줘",
+   "criteria": "center >= 1.5*outer",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "C": "high",
+     "NW": "low",
+     "N": "low",
+     "NE": "low",
+     "W": "low",
+     "E": "low",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S5",
+   "type": "공간",
+   "text": "서쪽이 동쪽보다 훨씬 복잡하게 만들어줘",
+   "criteria": "west >= 1.5*east",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "W": "high",
+     "SW": "high",
+     "NE": "low",
+     "E": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "S6",
+   "type": "공간",
+   "text": "목표 지점 근처를 장애물로 어렵게 만들어줘",
+   "criteria": "r_NE >= 0.45",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F1",
+   "type": "기능",
+   "text": "장애물을 빽빽하게 하되 시작점에서 목표까지는 갈 수 있어야 해",
+   "criteria": "density >= 0.40 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F2",
+   "type": "기능",
+   "text": "강 북쪽을 꽉 채우되 목표 지점에는 도달할 수 있게 해줘",
+   "criteria": "north >= 0.40 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F3",
+   "type": "기능",
+   "text": "플레이어가 반드시 목표에 도착할 수 있는 미로 같은 맵을 만들어줘",
+   "criteria": "density >= 0.40 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F4",
+   "type": "기능",
+   "text": "다리로 가는 길은 막지 말고 나머지는 장애물로 가득 채워줘",
+   "criteria": "density >= 0.40 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F5",
+   "type": "기능",
+   "text": "벽으로 가득 채우되 목표까지 가는 길은 남겨줘",
+   "criteria": "share_wall >= 0.4 & density >= 0.40 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {
+     "wall": 5
+    },
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "F6",
+   "type": "기능",
+   "text": "시작 지점 주변은 비워두고 목표까지 길이 끊기지 않게 해줘",
+   "criteria": "r_SW <= 0.15 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {},
+    "region_density": {
+     "SW": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M1",
+   "type": "복합",
+   "text": "북쪽에 바위를 많이 두고 남쪽은 거의 비워줘",
+   "criteria": "north >= 1.5*south & south <= 0.20 & share_rock >= 0.5",
+   "reference_params": {
+    "tag_multipliers": {
+     "rock": 4
+    },
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M2",
+   "type": "복합",
+   "text": "가운데는 비우고 가장자리를 벽과 상자로 둘러싸줘",
+   "criteria": "center <= 0.4*outer & share_wall + share_crate >= 0.75",
+   "reference_params": {
+    "tag_multipliers": {
+     "wall": 3,
+     "crate": 3,
+     "rock": 0.3,
+     "bush": 0.3
+    },
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high",
+     "C": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M3",
+   "type": "복합",
+   "text": "동쪽은 수풀로 빽빽하게, 서쪽은 탁 트이게 해줘",
+   "criteria": "east >= 1.5*west & share_bush >= 0.4",
+   "reference_params": {
+    "tag_multipliers": {
+     "bush": 4
+    },
+    "region_density": {
+     "NE": "high",
+     "E": "high",
+     "SE": "high",
+     "NW": "low",
+     "W": "low",
+     "SW": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M4",
+   "type": "복합",
+   "text": "장애물은 전체적으로 적게, 대신 벽 위주로 써줘",
+   "criteria": "density <= 0.20 & share_wall >= 0.4",
+   "reference_params": {
+    "tag_multipliers": {
+     "wall": 4
+    },
+    "region_density": {
+     "NW": "low",
+     "N": "low",
+     "NE": "low",
+     "W": "low",
+     "C": "low",
+     "E": "low",
+     "SW": "low",
+     "S": "low",
+     "SE": "low"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M5",
+   "type": "복합",
+   "text": "남쪽에 상자를 잔뜩 쌓되 목표까지 가는 길은 열어둬",
+   "criteria": "south >= 1.5*north & share_crate >= 0.4 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {
+     "crate": 4
+    },
+    "region_density": {
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  },
+  {
+   "id": "M6",
+   "type": "복합",
+   "text": "수풀과 바위가 빽빽한 숲인데 목표까지 가는 오솔길은 이어지게 해줘",
+   "criteria": "density >= 0.40 & share_bush + share_rock >= 0.75 & path == 1",
+   "reference_params": {
+    "tag_multipliers": {
+     "bush": 3,
+     "rock": 3,
+     "wall": 0.2,
+     "crate": 0.2
+    },
+    "region_density": {
+     "NW": "high",
+     "N": "high",
+     "NE": "high",
+     "W": "high",
+     "C": "high",
+     "E": "high",
+     "SW": "high",
+     "S": "high",
+     "SE": "high"
+    },
+    "hard_constraints": {
+     "path_required": true
+    }
+   }
+  }
+ ]
+}
